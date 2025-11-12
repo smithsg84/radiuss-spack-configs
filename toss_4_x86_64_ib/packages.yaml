@@ -124,15 +124,6 @@
         flags: {}
         environment: {}
         extra_rpaths: []
-    - spec: llvm@19.0.0git+clang~flang~lld~lldb
-      prefix: /usr/workspace/raja-dev/clang_sycl_e42590ef4b94_hip_gcc10.3.1_rocm6.3.1
-      extra_attributes:
-        compilers:
-          c: /usr/workspace/raja-dev/clang_sycl_e42590ef4b94_hip_gcc10.3.1_rocm6.3.1/bin/clang
-          cxx: /usr/workspace/raja-dev/clang_sycl_e42590ef4b94_hip_gcc10.3.1_rocm6.3.1/bin/clang++
-        flags: {}
-        environment: {}
-        extra_rpaths: [/usr/workspace/raja-dev/clang_sycl_e42590ef4b94_hip_gcc10.3.1_rocm6.3.1/lib, /usr/workspace/raja-dev/clang_sycl_e42590ef4b94_hip_gcc10.3.1_rocm6.3.1/lib64]
     - spec: llvm@20.0.0git+clang~flang~lld~lldb
       prefix: /usr/workspace/raja-dev/clang_sycl_730cd3a5275f_hip_gcc10.3.1_rocm6.0.2
       extra_attributes:
@@ -142,6 +133,15 @@
         flags: {}
         environment: {}
         extra_rpaths: [/usr/workspace/raja-dev/clang_sycl_730cd3a5275f_hip_gcc10.3.1_rocm6.0.2/lib, /usr/workspace/raja-dev/clang_sycl_730cd3a5275f_hip_gcc10.3.1_rocm6.0.2/lib64]
+    - spec: llvm@22.0.0git+clang~flang~lld~lldb
+      prefix: /usr/WS2/raja-dev/clang_sycl_16b7bcb09915_hip_gcc10.3.1_rocm6.4.2
+      extra_attributes:
+        compilers:
+          c: /usr/WS2/raja-dev/clang_sycl_16b7bcb09915_hip_gcc10.3.1_rocm6.4.2/bin/clang
+          cxx: /usr/WS2/raja-dev/clang_sycl_16b7bcb09915_hip_gcc10.3.1_rocm6.4.2/bin/clang++
+        flags: {}
+        environment: {}
+        extra_rpaths: [/usr/WS2/raja-dev/clang_sycl_16b7bcb09915_hip_gcc10.3.1_rocm6.4.2/lib, /usr/WS2/raja-dev/clang_sycl_16b7bcb09915_hip_gcc10.3.1_rocm6.4.2/lib64]
   llvm-amdgpu:
     externals:
     - spec: llvm-amdgpu@5.7.1
@@ -499,17 +499,17 @@
       when: '%cxx'
     - spec: '%[virtuals=fortran]gcc@11.2.1'
       when: '%fortran'
-  sycl-clang-19-gcc-10:
-    - spec: '%[virtuals=c]llvm@19.0.0git+clang~flang~lld~lldb'
-      when: '%c'
-    - spec: '%[virtuals=cxx]llvm@19.0.0git+clang~flang~lld~lldb'
-      when: '%cxx'
-    - spec: '%[virtuals=fortran]gcc@10.3.1'
-      when: '%fortran'
   sycl-clang-20-gcc-10:
     - spec: '%[virtuals=c]llvm@20.0.0git+clang~flang~lld~lldb'
       when: '%c'
     - spec: '%[virtuals=cxx]llvm@20.0.0git+clang~flang~lld~lldb'
+      when: '%cxx'
+    - spec: '%[virtuals=fortran]gcc@10.3.1'
+      when: '%fortran'
+  sycl-clang-22-gcc-10:
+    - spec: '%[virtuals=c]llvm@22.0.0git+clang~flang~lld~lldb'
+      when: '%c'
+    - spec: '%[virtuals=cxx]llvm@22.0.0git+clang~flang~lld~lldb'
       when: '%cxx'
     - spec: '%[virtuals=fortran]gcc@10.3.1'
       when: '%fortran'
