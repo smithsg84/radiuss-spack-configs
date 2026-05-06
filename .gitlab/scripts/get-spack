@@ -12,13 +12,15 @@ set -euo pipefail
 # Fetch or reuse the Spack checkout used by CI.
 #
 # Key points:
-# - If ${MY_SPACK_PARENT_DIR}/spack already has tag ${CI_PIPELINE_ID}, assume
-#   this pipeline already prepared the checkout and leave all refs unchanged.
-# - MY_SPACK_COMMIT selects an immutable commit. If the existing checkout is
-#   already at that commit, no fetch is performed.
-# - Without MY_SPACK_COMMIT, MY_SPACK_BRANCH is required. Branch refs are always
-#   fetched because they can move; use --warn-branch-ref to make this explicit in
-#   the CI log. The resolved commit is printed for traceability.
+# - If ${MY_SPACK_PARENT_DIR}/spack already has tag ${CI_PIPELINE_ID}:
+#   - If using ${MY_SPACK_COMMIT}, check if the existing checkout is already at
+#     that commit. If not, fix the checkout.
+#   - Else assume this pipeline already prepared the checkout and leave all
+#     refs unchanged.
+# - Without MY_SPACK_COMMIT, MY_SPACK_BRANCH is required. Branch refs can move,
+#   for example if a failing job gets retried, so this is not recommended. To
+#   Users can use --warn-branch-ref to make this explicit in the CI log. The
+#   resolved commit is printed for traceability.
 
 WARN_BRANCH_REF=false
 
@@ -131,7 +133,6 @@ else
   if [[ ! -d "${SPACK_DIR}" ]]
   then
     mkdir -p "${MY_SPACK_PARENT_DIR}"
-    # A shallow clone is enough, and much faster.
     git clone "${MY_SPACK_REPO}" --depth 1 --branch "${MY_SPACK_BRANCH}" "${SPACK_DIR}"
   elif [[ ! -d "${SPACK_DIR}/.git" ]]
   then
