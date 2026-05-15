@@ -2,7 +2,7 @@ spack:
   repos:
     builtin::
       git: https://github.com/spack/spack-packages.git
-      commit: fc0a828957877a44a35e43422f7bf44e4742c8c8
+      commit: 3b0fbacf04d9afb4ca32aa708639e187ee740e56
   include:
     - config.yaml
     - packages.yaml
