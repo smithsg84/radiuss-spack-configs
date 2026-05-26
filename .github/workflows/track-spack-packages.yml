@@ -1,0 +1,192 @@
+name: Track spack-packages updates
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  track-spack-packages:
+    runs-on: ubuntu-latest
+    env:
+      SPACK_PACKAGES_REPO: https://github.com/spack/spack-packages.git
+      MONITORED_PACKAGES: camp umpire raja raja-perf chai care caliper aluminum axom dihydrogen hydrogen lbann sina
+      TARGET_FILES: >-
+        .gitlab/spack/envs/shared-ci/spack.yaml
+        .gitlab/spack/envs/cached-cmake/spack.yaml
+        toss_4_x86_64_ib/spack.yaml
+        toss_4_x86_64_ib_cray/spack.yaml
+        blueos_3_ppc64le_ib/spack.yaml
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect relevant upstream changes
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CURRENT_COMMIT=$(grep -E '^\s*commit:\s*[0-9a-f]{40}\s*$' .gitlab/spack/envs/shared-ci/spack.yaml | sed -E 's/^\s*commit:\s*([0-9a-f]{40})\s*$/\1/')
+          if [[ -z "${CURRENT_COMMIT}" ]]; then
+            echo "Unable to read current spack-packages commit." >&2
+            exit 1
+          fi
+          for TARGET_FILE in ${TARGET_FILES}; do
+            FILE_COMMIT=$(grep -E '^\s*commit:\s*[0-9a-f]{40}\s*$' "${TARGET_FILE}" | sed -E 's/^\s*commit:\s*([0-9a-f]{40})\s*$/\1/')
+            if [[ -z "${FILE_COMMIT}" ]]; then
+              echo "Unable to read spack-packages commit in ${TARGET_FILE}." >&2
+              exit 1
+            fi
+            if [[ "${FILE_COMMIT}" != "${CURRENT_COMMIT}" ]]; then
+              echo "Inconsistent pinned commits found across target files." >&2
+              exit 1
+            fi
+          done
+
+          SPACK_PACKAGES_DIR="${RUNNER_TEMP}/spack-packages"
+          git clone "${SPACK_PACKAGES_REPO}" "${SPACK_PACKAGES_DIR}"
+
+          DEFAULT_BRANCH=$(git -C "${SPACK_PACKAGES_DIR}" remote show origin | sed -n '/HEAD branch/s/.*: //p')
+          if [[ -z "${DEFAULT_BRANCH}" ]]; then
+            echo "Unable to determine default branch for ${SPACK_PACKAGES_REPO}." >&2
+            exit 1
+          fi
+          LATEST_COMMIT=$(git -C "${SPACK_PACKAGES_DIR}" rev-parse "origin/${DEFAULT_BRANCH}")
+          if [[ -z "${LATEST_COMMIT}" || ! "${LATEST_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Unable to resolve latest commit for ${DEFAULT_BRANCH}." >&2
+            exit 1
+          fi
+          LATEST_COMMIT_SHORT=$(git -C "${SPACK_PACKAGES_DIR}" rev-parse --short=12 "${LATEST_COMMIT}")
+
+          echo "current_commit=${CURRENT_COMMIT}" >> "${GITHUB_OUTPUT}"
+          echo "latest_commit=${LATEST_COMMIT}" >> "${GITHUB_OUTPUT}"
+          echo "latest_commit_short=${LATEST_COMMIT_SHORT}" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${CURRENT_COMMIT}" == "${LATEST_COMMIT}" ]]; then
+            echo "should_update=false" >> "${GITHUB_OUTPUT}"
+            echo "reason=already_up_to_date" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if ! git -C "${SPACK_PACKAGES_DIR}" rev-parse --verify --quiet "${CURRENT_COMMIT}^{commit}" >/dev/null; then
+            echo "Current commit ${CURRENT_COMMIT} not available in cloned history; forcing update." >&2
+            echo "should_update=true" >> "${GITHUB_OUTPUT}"
+            echo "reason=current_commit_not_found" >> "${GITHUB_OUTPUT}"
+            echo "affected_packages=" >> "${GITHUB_OUTPUT}"
+            > "${RUNNER_TEMP}/spack-packages-diff.txt"
+            exit 0
+          fi
+
+          CHANGED_FILES_OUTPUT=$(git -C "${SPACK_PACKAGES_DIR}" diff --name-only "${CURRENT_COMMIT}..${LATEST_COMMIT}" -- repos/spack_repo/builtin/packages)
+          readarray -t CHANGED_FILES <<< "${CHANGED_FILES_OUTPUT}"
+          FILTERED_CHANGED_FILES=()
+          for FILE in "${CHANGED_FILES[@]}"; do
+            if [[ -n "${FILE}" ]]; then
+              FILTERED_CHANGED_FILES+=("${FILE}")
+            fi
+          done
+          CHANGED_FILES=("${FILTERED_CHANGED_FILES[@]}")
+
+          if [[ "${#CHANGED_FILES[@]}" -eq 0 ]]; then
+            echo "should_update=false" >> "${GITHUB_OUTPUT}"
+            echo "reason=no_package_changes" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          AFFECTED_PACKAGES=()
+          for PACKAGE in ${MONITORED_PACKAGES}; do
+            for FILE in "${CHANGED_FILES[@]}"; do
+              if [[ "${FILE}" == "repos/spack_repo/builtin/packages/${PACKAGE//-/_}/"* ]]; then
+                AFFECTED_PACKAGES+=("${PACKAGE}")
+                break
+              fi
+            done
+          done
+
+          if [[ "${#AFFECTED_PACKAGES[@]}" -eq 0 ]]; then
+            echo "should_update=false" >> "${GITHUB_OUTPUT}"
+            echo "reason=no_monitored_package_changes" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          echo "affected_packages=${AFFECTED_PACKAGES[*]}" >> "${GITHUB_OUTPUT}"
+
+          DIFF_PATHS=()
+          for PACKAGE in "${AFFECTED_PACKAGES[@]}"; do
+            DIFF_PATHS+=("repos/spack_repo/builtin/packages/${PACKAGE//-/_}")
+          done
+          git -C "${SPACK_PACKAGES_DIR}" diff "${CURRENT_COMMIT}..${LATEST_COMMIT}" -- "${DIFF_PATHS[@]}" > "${RUNNER_TEMP}/spack-packages-diff.txt"
+
+          echo "should_update=true" >> "${GITHUB_OUTPUT}"
+          echo "reason=monitored_package_changed" >> "${GITHUB_OUTPUT}"
+
+      - name: Create issue
+        if: steps.detect.outputs.should_update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_COMMIT: ${{ steps.detect.outputs.current_commit }}
+          LATEST_COMMIT: ${{ steps.detect.outputs.latest_commit }}
+          LATEST_COMMIT_SHORT: ${{ steps.detect.outputs.latest_commit_short }}
+          AFFECTED_PACKAGES: ${{ steps.detect.outputs.affected_packages }}
+          REASON: ${{ steps.detect.outputs.reason }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${AFFECTED_PACKAGES}" ]]; then
+            AFFECTED_LIST="_Could not determine affected packages (current commit not found in upstream history)._"
+          else
+            AFFECTED_LIST=""
+            for P in ${AFFECTED_PACKAGES}; do
+              AFFECTED_LIST+="- \`${P}\`"$'\n'
+            done
+          fi
+
+          DIFF_CONTENT=$(cat "${RUNNER_TEMP}/spack-packages-diff.txt")
+          if [[ -z "${DIFF_CONTENT}" ]]; then
+            DIFF_SECTION="_Diff unavailable (current commit not found in upstream history)._"
+          else
+            # GitHub issue bodies are capped at 65536 characters; keep some
+            # headroom for the surrounding text by truncating the diff earlier.
+            MAX_DIFF_CHARS=60000
+            if [[ "${#DIFF_CONTENT}" -gt "${MAX_DIFF_CHARS}" ]]; then
+              DIFF_CONTENT="${DIFF_CONTENT:0:${MAX_DIFF_CHARS}}"$'\n'"... _(truncated — diff exceeds ${MAX_DIFF_CHARS} characters)_"
+            fi
+            DIFF_SECTION='```diff'$'\n'"${DIFF_CONTENT}"$'\n''```'
+          fi
+
+          ISSUE_BODY="Automated daily check found that monitored \`spack/spack-packages\` package definitions have changed.
+
+## spack-packages references
+
+| | Commit |
+|---|---|
+| Current | \`${CURRENT_COMMIT}\` |
+| New | \`${LATEST_COMMIT}\` |
+
+## Affected packages
+
+The following monitored packages have changed (scope: \`${MONITORED_PACKAGES}\`):
+
+${AFFECTED_LIST}
+## Diff
+
+Changes in \`spack/spack-packages\` from \`${CURRENT_COMMIT}\` to \`${LATEST_COMMIT}\` scoped to affected packages:
+
+${DIFF_SECTION}"
+
+          gh issue create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Update spack-packages reference to ${LATEST_COMMIT_SHORT}" \
+            --body "${ISSUE_BODY}" \
+            --label "dependencies" \
+            --label "automation"
+
+      - name: Log decision
+        if: steps.detect.outputs.should_update != 'true'
+        run: |
+          echo "No issue created. Reason: ${{ steps.detect.outputs.reason }}"
