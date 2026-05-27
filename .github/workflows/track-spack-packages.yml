@@ -2,12 +2,11 @@ name: Track spack-packages updates
 
 on:
   schedule:
-    - cron: '17 6 * * *'  # shared-ci: monitor changes to CI package definitions
-    - cron: '37 6 * * *'  # cached-cmake: monitor changes to cached_cmake.py
+    - cron: '17 6 * * 1'
   workflow_dispatch:
     inputs:
-      mode:
-        description: 'Tracking path to run (all runs both)'
+      target:
+        description: 'Matrix entry to run (all = every entry)'
         required: false
         default: all
         type: choice
@@ -24,29 +23,34 @@ jobs:
   track:
     name: Track ${{ matrix.name }}
     runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch'
+        && (inputs.target == 'all' || inputs.target == matrix.name))
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Watch a curated list of packages used by this env.
           - name: shared-ci
             spack_yaml: .gitlab/spack/envs/shared-ci/spack.yaml
-            track_type: packages
-            cron: '17 6 * * *'
+            packages: |
+              camp
+              umpire
+              raja
+              raja-perf
+              chai
+              care
+              caliper
+          # Watch a specific upstream file.
           - name: cached-cmake
             spack_yaml: .gitlab/spack/envs/cached-cmake/spack.yaml
-            track_type: build_system
-            cron: '37 6 * * *'
-
-    # For scheduled runs, each matrix item fires only on its own cron entry.
-    # For workflow_dispatch, run the selected mode (default: all).
-    if: >-
-      (github.event_name == 'workflow_dispatch' && (inputs.mode == 'all' || inputs.mode == matrix.name)) ||
-      (github.event_name == 'schedule' && github.event.schedule == matrix.cron)
+            files: |
+              repos/spack_repo/builtin/build_systems/cached_cmake.py
 
     env:
       SPACK_PACKAGES_REPO: https://github.com/spack/spack-packages.git
       SPACK_YAML: ${{ matrix.spack_yaml }}
-      TRACK_TYPE: ${{ matrix.track_type }}
 
     steps:
       - name: Checkout repository
@@ -58,11 +62,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Spack always stores full 40-character SHA-1 commit hashes.
-          CURRENT_COMMIT=$(grep -E '^\s*commit:\s*[0-9a-f]{40}\s*$' "${SPACK_YAML}" \
-            | sed -E 's/^\s*commit:\s*([0-9a-f]{40})\s*$/\1/')
-          if [[ -z "${CURRENT_COMMIT}" ]]; then
-            echo "Unable to read current spack-packages commit from ${SPACK_YAML}." >&2
+          # Read the upstream pin from spack.repos.builtin.commit.
+          # Spack stores full 40-character SHA-1 hashes here.
+          CURRENT_COMMIT=$(yq '.spack.repos.builtin.commit' "${SPACK_YAML}")
+          if [[ -z "${CURRENT_COMMIT}" || "${CURRENT_COMMIT}" == "null" ]]; then
+            echo "Missing .spack.repos.builtin.commit in ${SPACK_YAML}." >&2
+            exit 1
+          fi
+          if ! [[ "${CURRENT_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid commit hash in ${SPACK_YAML}: ${CURRENT_COMMIT}" >&2
             exit 1
           fi
 
@@ -86,6 +94,40 @@ jobs:
           echo "latest_commit=${LATEST_COMMIT}" >> "${GITHUB_OUTPUT}"
           echo "latest_commit_short=${LATEST_COMMIT_SHORT}" >> "${GITHUB_OUTPUT}"
 
+      - name: Resolve watched paths
+        id: paths
+        shell: bash
+        env:
+          PACKAGES: ${{ matrix.packages }}
+          FILES: ${{ matrix.files }}
+        run: |
+          set -euo pipefail
+
+          PACKAGES_PREFIX="repos/spack_repo/builtin/packages"
+          WATCHED_PATHS_FILE="${RUNNER_TEMP}/watched_paths.txt"
+          : > "${WATCHED_PATHS_FILE}"
+
+          # Each watched package becomes its upstream directory.
+          # Spack maps hyphens to underscores (raja-perf -> raja_perf).
+          while IFS= read -r PKG; do
+            [[ -z "${PKG// /}" ]] && continue
+            echo "${PACKAGES_PREFIX}/${PKG//-/_}" >> "${WATCHED_PATHS_FILE}"
+          done <<< "${PACKAGES:-}"
+
+          # Literal files under spack-packages.
+          while IFS= read -r FILE; do
+            [[ -z "${FILE// /}" ]] && continue
+            echo "${FILE}" >> "${WATCHED_PATHS_FILE}"
+          done <<< "${FILES:-}"
+
+          if [[ ! -s "${WATCHED_PATHS_FILE}" ]]; then
+            echo "Matrix entry declared neither packages nor files." >&2
+            exit 1
+          fi
+
+          echo "Watched paths:"
+          cat "${WATCHED_PATHS_FILE}"
+
       - name: Detect relevant upstream changes
         id: detect
         shell: bash
@@ -96,6 +138,11 @@ jobs:
           set -euo pipefail
 
           SPACK_PACKAGES_DIR="${RUNNER_TEMP}/spack-packages"
+          WATCHED_PATHS_FILE="${RUNNER_TEMP}/watched_paths.txt"
+          CHANGED_PATHS_FILE="${RUNNER_TEMP}/changed-paths.txt"
+          DIFF_FILE="${RUNNER_TEMP}/spack-packages-diff.txt"
+          : > "${CHANGED_PATHS_FILE}"
+          : > "${DIFF_FILE}"
 
           if [[ "${CURRENT_COMMIT}" == "${LATEST_COMMIT}" ]]; then
             echo "should_update=false" >> "${GITHUB_OUTPUT}"
@@ -103,95 +150,37 @@ jobs:
             exit 0
           fi
 
+          readarray -t WATCH < "${WATCHED_PATHS_FILE}"
+
           if ! git -C "${SPACK_PACKAGES_DIR}" rev-parse --verify --quiet "${CURRENT_COMMIT}^{commit}" >/dev/null; then
             echo "Current commit ${CURRENT_COMMIT} not in upstream history; forcing update." >&2
             echo "should_update=true" >> "${GITHUB_OUTPUT}"
             echo "reason=current_commit_not_found" >> "${GITHUB_OUTPUT}"
-            echo "affected_info=" >> "${GITHUB_OUTPUT}"
-            > "${RUNNER_TEMP}/spack-packages-diff.txt"
             exit 0
           fi
 
-          if [[ "${TRACK_TYPE}" == "packages" ]]; then
-            # Extract the monitored package list dynamically from the spack.yaml
-            # definitions block. Looks for the first key of the form
-            # "  - <name>-projects:" and collects items indented one level deeper
-            # ("    - <package>"), stopping at the next sibling definition.
-            # Expected YAML structure (shared-ci/spack.yaml):
-            #   definitions:
-            #   - radiuss-projects:
-            #     - camp
-            #     - umpire
-            #     ...
-            #   - dependencies: []
-            MONITORED_PACKAGES=$(awk '
-              /^  - [a-z].*-projects:/ { found=1; next }
-              found && /^    - / { sub(/^    - /, ""); printf "%s ", $0; next }
-              found && /^  - / { found=0 }
-            ' "${SPACK_YAML}")
-            MONITORED_PACKAGES="${MONITORED_PACKAGES% }"
-            if [[ -z "${MONITORED_PACKAGES}" ]]; then
-              echo "Unable to extract package list from ${SPACK_YAML}." >&2
-              exit 1
-            fi
-
-            CHANGED_FILES_OUTPUT=$(git -C "${SPACK_PACKAGES_DIR}" diff --name-only \
-              "${CURRENT_COMMIT}..${LATEST_COMMIT}" -- repos/spack_repo/builtin/packages)
-            readarray -t CHANGED_FILES <<< "${CHANGED_FILES_OUTPUT}"
-            FILTERED=()
-            for F in "${CHANGED_FILES[@]}"; do
-              [[ -n "${F}" ]] && FILTERED+=("${F}")
-            done
-
-            if [[ "${#FILTERED[@]}" -eq 0 ]]; then
-              echo "should_update=false" >> "${GITHUB_OUTPUT}"
-              echo "reason=no_package_changes" >> "${GITHUB_OUTPUT}"
-              exit 0
-            fi
-
-            AFFECTED_PACKAGES=()
-            for PACKAGE in ${MONITORED_PACKAGES}; do
-              for FILE in "${FILTERED[@]}"; do
-                if [[ "${FILE}" == "repos/spack_repo/builtin/packages/${PACKAGE//-/_}/"* ]]; then
-                  AFFECTED_PACKAGES+=("${PACKAGE}")
-                  break
-                fi
-              done
-            done
-
-            if [[ "${#AFFECTED_PACKAGES[@]}" -eq 0 ]]; then
-              echo "should_update=false" >> "${GITHUB_OUTPUT}"
-              echo "reason=no_monitored_package_changes" >> "${GITHUB_OUTPUT}"
-              exit 0
-            fi
-
-            echo "affected_info=${AFFECTED_PACKAGES[*]}" >> "${GITHUB_OUTPUT}"
-
-            DIFF_PATHS=()
-            for PACKAGE in "${AFFECTED_PACKAGES[@]}"; do
-              # Spack stores package directories with underscores (e.g.
-              # raja-perf → raja_perf); hyphens in package names become underscores.
-              DIFF_PATHS+=("repos/spack_repo/builtin/packages/${PACKAGE//-/_}")
-            done
-            git -C "${SPACK_PACKAGES_DIR}" diff "${CURRENT_COMMIT}..${LATEST_COMMIT}" \
-              -- "${DIFF_PATHS[@]}" > "${RUNNER_TEMP}/spack-packages-diff.txt"
-
-          elif [[ "${TRACK_TYPE}" == "build_system" ]]; then
-            TRACKED_FILE="repos/spack_repo/builtin/build_systems/cached_cmake.py"
-
-            CHANGED=$(git -C "${SPACK_PACKAGES_DIR}" diff --name-only \
-              "${CURRENT_COMMIT}..${LATEST_COMMIT}" -- "${TRACKED_FILE}")
-
-            if [[ -z "${CHANGED}" ]]; then
-              echo "should_update=false" >> "${GITHUB_OUTPUT}"
-              echo "reason=no_build_system_changes" >> "${GITHUB_OUTPUT}"
-              exit 0
-            fi
-
-            echo "affected_info=${TRACKED_FILE}" >> "${GITHUB_OUTPUT}"
-            git -C "${SPACK_PACKAGES_DIR}" diff "${CURRENT_COMMIT}..${LATEST_COMMIT}" \
-              -- "${TRACKED_FILE}" > "${RUNNER_TEMP}/spack-packages-diff.txt"
+          CHANGED=$(git -C "${SPACK_PACKAGES_DIR}" diff --name-only \
+            "${CURRENT_COMMIT}..${LATEST_COMMIT}" -- "${WATCH[@]}")
+          if [[ -z "${CHANGED}" ]]; then
+            echo "should_update=false" >> "${GITHUB_OUTPUT}"
+            echo "reason=no_relevant_changes" >> "${GITHUB_OUTPUT}"
+            exit 0
           fi
+
+          # Surface which watched paths actually changed (file or prefix match).
+          TRACKED_AND_CHANGED=()
+          for W in "${WATCH[@]}"; do
+            while IFS= read -r C; do
+              if [[ "${C}" == "${W}" || "${C}" == "${W}/"* ]]; then
+                TRACKED_AND_CHANGED+=("${W}")
+                break
+              fi
+            done <<< "${CHANGED}"
+          done
+          printf '%s\n' "${TRACKED_AND_CHANGED[@]}" > "${CHANGED_PATHS_FILE}"
+
+          git -C "${SPACK_PACKAGES_DIR}" diff "${CURRENT_COMMIT}..${LATEST_COMMIT}" \
+            -- "${TRACKED_AND_CHANGED[@]}" > "${DIFF_FILE}"
 
           echo "should_update=true" >> "${GITHUB_OUTPUT}"
           echo "reason=relevant_changes_found" >> "${GITHUB_OUTPUT}"
@@ -203,40 +192,36 @@ jobs:
           CURRENT_COMMIT: ${{ steps.commits.outputs.current_commit }}
           LATEST_COMMIT: ${{ steps.commits.outputs.latest_commit }}
           LATEST_COMMIT_SHORT: ${{ steps.commits.outputs.latest_commit_short }}
-          AFFECTED_INFO: ${{ steps.detect.outputs.affected_info }}
           MATRIX_NAME: ${{ matrix.name }}
         run: |
           set -euo pipefail
 
-          if [[ "${TRACK_TYPE}" == "packages" ]]; then
-            AFFECTED_HEADER="## Affected packages"
-            if [[ -z "${AFFECTED_INFO}" ]]; then
-              AFFECTED_SECTION="_Could not determine affected packages (current commit not found in upstream history)._"
-            else
-              AFFECTED_SECTION=""
-              for P in ${AFFECTED_INFO}; do
-                AFFECTED_SECTION+="- \`${P}\`"$'\n'
-              done
-            fi
+          CHANGED_PATHS_FILE="${RUNNER_TEMP}/changed-paths.txt"
+          DIFF_FILE="${RUNNER_TEMP}/spack-packages-diff.txt"
+
+          if [[ ! -s "${CHANGED_PATHS_FILE}" ]]; then
+            CHANGED_SECTION="_Could not determine changed paths (current commit not found in upstream history)._"
           else
-            AFFECTED_HEADER="## Changed file"
-            AFFECTED_SECTION="- \`${AFFECTED_INFO}\`"
+            CHANGED_SECTION=""
+            while IFS= read -r P; do
+              CHANGED_SECTION+="- \`${P}\`"$'\n'
+            done < "${CHANGED_PATHS_FILE}"
           fi
 
-          DIFF_CONTENT=$(cat "${RUNNER_TEMP}/spack-packages-diff.txt")
+          DIFF_CONTENT=$(cat "${DIFF_FILE}")
           if [[ -z "${DIFF_CONTENT}" ]]; then
             DIFF_SECTION="_Diff unavailable (current commit not found in upstream history)._"
           else
-            # GitHub issue bodies are capped at 65536 characters; keep some
-            # headroom for the surrounding text by truncating the diff earlier.
+            # GitHub issue bodies are capped at 65536 characters; leave headroom
+            # for surrounding markdown by truncating the diff earlier.
             MAX_DIFF_CHARS=60000
             if [[ "${#DIFF_CONTENT}" -gt "${MAX_DIFF_CHARS}" ]]; then
-              DIFF_CONTENT="${DIFF_CONTENT:0:${MAX_DIFF_CHARS}}"$'\n'"... _(truncated — diff exceeds ${MAX_DIFF_CHARS} characters)_"
+              DIFF_CONTENT="${DIFF_CONTENT:0:${MAX_DIFF_CHARS}}"$'\n'"... _(truncated, diff exceeds ${MAX_DIFF_CHARS} characters)_"
             fi
             DIFF_SECTION='```diff'$'\n'"${DIFF_CONTENT}"$'\n''```'
           fi
 
-          ISSUE_BODY="Automated daily check detected relevant changes in \`spack/spack-packages\` for **${MATRIX_NAME}**.
+          ISSUE_BODY="Automated weekly check detected relevant changes in \`spack/spack-packages\` for **${MATRIX_NAME}**.
 
 ## spack-packages references
 
@@ -245,9 +230,9 @@ jobs:
 | Current | \`${CURRENT_COMMIT}\` |
 | New | \`${LATEST_COMMIT}\` |
 
-${AFFECTED_HEADER}
+## Changed paths
 
-${AFFECTED_SECTION}
+${CHANGED_SECTION}
 ## Diff
 
 Changes in \`spack/spack-packages\` from \`${CURRENT_COMMIT}\` to \`${LATEST_COMMIT}\`:
