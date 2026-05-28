@@ -222,28 +222,31 @@ jobs:
             DIFF_SECTION='```diff'$'\n'"${DIFF_CONTENT}"$'\n''```'
           fi
 
-          ISSUE_BODY="Automated weekly check detected relevant changes in \`spack/spack-packages\` for **${MATRIX_NAME}**.
-
-## spack-packages references
-
-| | Commit |
-|---|---|
-| Current | \`${CURRENT_COMMIT}\` |
-| New | \`${LATEST_COMMIT}\` |
-
-## Changed paths
-
-${CHANGED_SECTION}
-## Diff
-
-Changes in \`spack/spack-packages\` from \`${CURRENT_COMMIT}\` to \`${LATEST_COMMIT}\`:
-
-${DIFF_SECTION}"
+          BODY_FILE="${RUNNER_TEMP}/issue-body.md"
+          {
+            echo "Automated weekly check detected relevant changes in \`spack/spack-packages\` for **${MATRIX_NAME}**."
+            echo
+            echo "## spack-packages references"
+            echo
+            echo "| | Commit |"
+            echo "|---|---|"
+            echo "| Current | \`${CURRENT_COMMIT}\` |"
+            echo "| New | \`${LATEST_COMMIT}\` |"
+            echo
+            echo "## Changed paths"
+            echo
+            printf '%s' "${CHANGED_SECTION}"
+            echo "## Diff"
+            echo
+            echo "Changes in \`spack/spack-packages\` from \`${CURRENT_COMMIT}\` to \`${LATEST_COMMIT}\`:"
+            echo
+            echo "${DIFF_SECTION}"
+          } > "${BODY_FILE}"
 
           gh issue create \
             --repo "${GITHUB_REPOSITORY}" \
             --title "[${MATRIX_NAME}] Update spack-packages reference to ${LATEST_COMMIT_SHORT}" \
-            --body "${ISSUE_BODY}" \
+            --body-file "${BODY_FILE}" \
             --label "dependencies" \
             --label "automation"
 
