@@ -80,6 +80,9 @@ jobs:
           echo "latest_commit=${LATEST_COMMIT}" >> "${GITHUB_OUTPUT}"
           echo "latest_commit_short=${LATEST_COMMIT_SHORT}" >> "${GITHUB_OUTPUT}"
 
+          echo "Current commit : ${CURRENT_COMMIT}"
+          echo "Latest commit : ${LATEST_COMMIT}"
+
       - name: Resolve watched paths
         id: paths
         shell: bash
