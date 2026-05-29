@@ -162,6 +162,7 @@ jobs:
             while IFS= read -r C; do
               if [[ "${C}" == "${W}" || "${C}" == "${W}/"* ]]; then
                 TRACKED_AND_CHANGED+=("${W}")
+                echo "Detected relevant change in ${C}"
                 break
               fi
             done <<< "${CHANGED}"
