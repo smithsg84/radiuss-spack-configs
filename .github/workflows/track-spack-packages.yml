@@ -4,17 +4,6 @@ on:
   pull_request:
   schedule:
     - cron: '17 6 * * 1'
-  workflow_dispatch:
-    inputs:
-      target:
-        description: 'Matrix entry to run (all = every entry)'
-        required: false
-        default: all
-        type: choice
-        options:
-          - all
-          - shared-ci
-          - cached-cmake
 
 permissions:
   contents: read
@@ -24,10 +13,6 @@ jobs:
   track:
     name: Track ${{ matrix.name }}
     runs-on: ubuntu-latest
-    if: >-
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch'
-        && (inputs.target == 'all' || inputs.target == matrix.name))
     strategy:
       fail-fast: false
       matrix:
