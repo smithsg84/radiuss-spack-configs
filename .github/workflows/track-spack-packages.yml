@@ -28,6 +28,7 @@ jobs:
               chai
               care
               caliper
+              visit
           # Watch a specific upstream file.
           - name: cached-cmake
             spack_yaml: .gitlab/spack/envs/cached-cmake/spack.yaml
