@@ -237,7 +237,6 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --title "[${MATRIX_NAME}] Update spack-packages reference to ${LATEST_COMMIT_SHORT}" \
             --body-file "${BODY_FILE}" \
-            --label "dependencies" \
             --label "automation"
 
       - name: Log decision
