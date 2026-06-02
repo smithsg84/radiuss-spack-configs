@@ -1,7 +1,6 @@
 name: Track spack-packages updates
 
 on:
-  pull_request:
   schedule:
     - cron: '17 6 * * 1'
 
