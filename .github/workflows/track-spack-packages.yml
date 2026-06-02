@@ -1,0 +1,244 @@
+name: Track spack-packages updates
+
+on:
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  track:
+    name: Track ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Watch a curated list of packages used by this env.
+          - name: shared-ci
+            spack_yaml: .gitlab/spack/envs/shared-ci/spack.yaml
+            packages: |
+              camp
+              umpire
+              raja
+              raja-perf
+              chai
+              care
+              caliper
+          # Watch a specific upstream file.
+          - name: cached-cmake
+            spack_yaml: .gitlab/spack/envs/cached-cmake/spack.yaml
+            files: |
+              repos/spack_repo/builtin/build_systems/cached_cmake.py
+
+    env:
+      SPACK_PACKAGES_REPO: https://github.com/spack/spack-packages.git
+      SPACK_YAML: ${{ matrix.spack_yaml }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Resolve current and latest spack-packages commits
+        id: commits
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Read the upstream pin from spack.repos.builtin.commit.
+          # Spack stores full 40-character SHA-1 hashes here.
+          CURRENT_COMMIT=$(yq '.spack.repos.builtin.commit' "${SPACK_YAML}")
+          if [[ -z "${CURRENT_COMMIT}" || "${CURRENT_COMMIT}" == "null" ]]; then
+            echo "Missing .spack.repos.builtin.commit in ${SPACK_YAML}." >&2
+            exit 1
+          fi
+          if ! [[ "${CURRENT_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid commit hash in ${SPACK_YAML}: ${CURRENT_COMMIT}" >&2
+            exit 1
+          fi
+
+          SPACK_PACKAGES_DIR="${RUNNER_TEMP}/spack-packages"
+          git clone "${SPACK_PACKAGES_REPO}" "${SPACK_PACKAGES_DIR}"
+
+          DEFAULT_BRANCH=$(git -C "${SPACK_PACKAGES_DIR}" remote show origin \
+            | sed -n '/HEAD branch/s/.*: //p')
+          if [[ -z "${DEFAULT_BRANCH}" ]]; then
+            echo "Unable to determine default branch of ${SPACK_PACKAGES_REPO}." >&2
+            exit 1
+          fi
+          LATEST_COMMIT=$(git -C "${SPACK_PACKAGES_DIR}" rev-parse "origin/${DEFAULT_BRANCH}")
+          if [[ -z "${LATEST_COMMIT}" || ! "${LATEST_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Unable to resolve latest commit on ${DEFAULT_BRANCH}." >&2
+            exit 1
+          fi
+          LATEST_COMMIT_SHORT=$(git -C "${SPACK_PACKAGES_DIR}" rev-parse --short=12 "${LATEST_COMMIT}")
+
+          echo "current_commit=${CURRENT_COMMIT}" >> "${GITHUB_OUTPUT}"
+          echo "latest_commit=${LATEST_COMMIT}" >> "${GITHUB_OUTPUT}"
+          echo "latest_commit_short=${LATEST_COMMIT_SHORT}" >> "${GITHUB_OUTPUT}"
+
+          echo "Current commit : ${CURRENT_COMMIT}"
+          echo "Latest commit : ${LATEST_COMMIT}"
+
+      - name: Resolve watched paths
+        id: paths
+        shell: bash
+        env:
+          PACKAGES: ${{ matrix.packages }}
+          FILES: ${{ matrix.files }}
+        run: |
+          set -euo pipefail
+
+          PACKAGES_PREFIX="repos/spack_repo/builtin/packages"
+          WATCHED_PATHS_FILE="${RUNNER_TEMP}/watched_paths.txt"
+          : > "${WATCHED_PATHS_FILE}"
+
+          # Each watched package becomes its upstream directory.
+          # Spack maps hyphens to underscores (raja-perf -> raja_perf).
+          while IFS= read -r PKG; do
+            [[ -z "${PKG// /}" ]] && continue
+            echo "${PACKAGES_PREFIX}/${PKG//-/_}" >> "${WATCHED_PATHS_FILE}"
+          done <<< "${PACKAGES:-}"
+
+          # Literal files under spack-packages.
+          while IFS= read -r FILE; do
+            [[ -z "${FILE// /}" ]] && continue
+            echo "${FILE}" >> "${WATCHED_PATHS_FILE}"
+          done <<< "${FILES:-}"
+
+          if [[ ! -s "${WATCHED_PATHS_FILE}" ]]; then
+            echo "Matrix entry declared neither packages nor files." >&2
+            exit 1
+          fi
+
+          echo "Watched paths:"
+          cat "${WATCHED_PATHS_FILE}"
+
+      - name: Detect relevant upstream changes
+        id: detect
+        shell: bash
+        env:
+          CURRENT_COMMIT: ${{ steps.commits.outputs.current_commit }}
+          LATEST_COMMIT: ${{ steps.commits.outputs.latest_commit }}
+        run: |
+          set -euo pipefail
+
+          SPACK_PACKAGES_DIR="${RUNNER_TEMP}/spack-packages"
+          WATCHED_PATHS_FILE="${RUNNER_TEMP}/watched_paths.txt"
+          CHANGED_PATHS_FILE="${RUNNER_TEMP}/changed-paths.txt"
+          DIFF_FILE="${RUNNER_TEMP}/spack-packages-diff.txt"
+          : > "${CHANGED_PATHS_FILE}"
+          : > "${DIFF_FILE}"
+
+          if [[ "${CURRENT_COMMIT}" == "${LATEST_COMMIT}" ]]; then
+            echo "should_update=false" >> "${GITHUB_OUTPUT}"
+            echo "reason=already_up_to_date" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          readarray -t WATCH < "${WATCHED_PATHS_FILE}"
+
+          if ! git -C "${SPACK_PACKAGES_DIR}" rev-parse --verify --quiet "${CURRENT_COMMIT}^{commit}" >/dev/null; then
+            echo "Current commit ${CURRENT_COMMIT} not in upstream history; forcing update." >&2
+            echo "should_update=true" >> "${GITHUB_OUTPUT}"
+            echo "reason=current_commit_not_found" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          CHANGED=$(git -C "${SPACK_PACKAGES_DIR}" diff --name-only \
+            "${CURRENT_COMMIT}..${LATEST_COMMIT}" -- "${WATCH[@]}")
+          if [[ -z "${CHANGED}" ]]; then
+            echo "should_update=false" >> "${GITHUB_OUTPUT}"
+            echo "reason=no_relevant_changes" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # Surface which watched paths actually changed (file or prefix match).
+          TRACKED_AND_CHANGED=()
+          for W in "${WATCH[@]}"; do
+            while IFS= read -r C; do
+              if [[ "${C}" == "${W}" || "${C}" == "${W}/"* ]]; then
+                TRACKED_AND_CHANGED+=("${W}")
+                echo "Detected relevant change in ${C}"
+                break
+              fi
+            done <<< "${CHANGED}"
+          done
+          printf '%s\n' "${TRACKED_AND_CHANGED[@]}" > "${CHANGED_PATHS_FILE}"
+
+          git -C "${SPACK_PACKAGES_DIR}" diff "${CURRENT_COMMIT}..${LATEST_COMMIT}" \
+            -- "${TRACKED_AND_CHANGED[@]}" > "${DIFF_FILE}"
+
+          echo "should_update=true" >> "${GITHUB_OUTPUT}"
+          echo "reason=relevant_changes_found" >> "${GITHUB_OUTPUT}"
+
+      - name: Create issue
+        if: steps.detect.outputs.should_update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_COMMIT: ${{ steps.commits.outputs.current_commit }}
+          LATEST_COMMIT: ${{ steps.commits.outputs.latest_commit }}
+          LATEST_COMMIT_SHORT: ${{ steps.commits.outputs.latest_commit_short }}
+          MATRIX_NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+
+          CHANGED_PATHS_FILE="${RUNNER_TEMP}/changed-paths.txt"
+          DIFF_FILE="${RUNNER_TEMP}/spack-packages-diff.txt"
+
+          if [[ ! -s "${CHANGED_PATHS_FILE}" ]]; then
+            CHANGED_SECTION="_Could not determine changed paths (current commit not found in upstream history)._"
+          else
+            CHANGED_SECTION=""
+            while IFS= read -r P; do
+              CHANGED_SECTION+="- \`${P}\`"$'\n'
+            done < "${CHANGED_PATHS_FILE}"
+          fi
+
+          DIFF_CONTENT=$(cat "${DIFF_FILE}")
+          if [[ -z "${DIFF_CONTENT}" ]]; then
+            DIFF_SECTION="_Diff unavailable (current commit not found in upstream history)._"
+          else
+            # GitHub issue bodies are capped at 65536 characters; leave headroom
+            # for surrounding markdown by truncating the diff earlier.
+            MAX_DIFF_CHARS=60000
+            if [[ "${#DIFF_CONTENT}" -gt "${MAX_DIFF_CHARS}" ]]; then
+              DIFF_CONTENT="${DIFF_CONTENT:0:${MAX_DIFF_CHARS}}"$'\n'"... _(truncated, diff exceeds ${MAX_DIFF_CHARS} characters)_"
+            fi
+            DIFF_SECTION='```diff'$'\n'"${DIFF_CONTENT}"$'\n''```'
+          fi
+
+          BODY_FILE="${RUNNER_TEMP}/issue-body.md"
+          {
+            echo "Automated weekly check detected relevant changes in \`spack/spack-packages\` for **${MATRIX_NAME}**."
+            echo
+            echo "## spack-packages references"
+            echo
+            echo "| | Commit |"
+            echo "|---|---|"
+            echo "| Current | \`${CURRENT_COMMIT}\` |"
+            echo "| New | \`${LATEST_COMMIT}\` |"
+            echo
+            echo "## Changed paths"
+            echo
+            printf '%s' "${CHANGED_SECTION}"
+            echo "## Diff"
+            echo
+            echo "Changes in \`spack/spack-packages\` from \`${CURRENT_COMMIT}\` to \`${LATEST_COMMIT}\`:"
+            echo
+            echo "${DIFF_SECTION}"
+          } > "${BODY_FILE}"
+
+          gh issue create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "[${MATRIX_NAME}] Update spack-packages reference to ${LATEST_COMMIT_SHORT}" \
+            --body-file "${BODY_FILE}" \
+            --label "automation"
+
+      - name: Log decision
+        if: steps.detect.outputs.should_update != 'true'
+        run: |
+          echo "No issue created. Reason: ${{ steps.detect.outputs.reason }}"
