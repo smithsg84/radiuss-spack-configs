@@ -238,11 +238,24 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --state open \
               --label "automation" \
-              --limit 100 \
-              --json number,title \
-              --jq '.[] | select((.title | contains("'"${ISSUE_TITLE_PREFIX}"'")) or (.title | startswith("['"${MATRIX_NAME}"'] Update spack-packages reference to "))) | .number' \
-              | head -n1
+              --search "\"${ISSUE_TITLE_PREFIX}\" in:title" \
+              --limit 1 \
+              --json number \
+              --jq '.[0].number // empty'
           )
+          if [[ -z "${EXISTING_ISSUE_NUMBER}" ]]; then
+            LEGACY_TITLE_PREFIX="[${MATRIX_NAME}] Update spack-packages reference to "
+            EXISTING_ISSUE_NUMBER=$(
+              gh issue list \
+                --repo "${GITHUB_REPOSITORY}" \
+                --state open \
+                --label "automation" \
+                --search "\"${LEGACY_TITLE_PREFIX}\" in:title" \
+                --limit 1 \
+                --json number \
+                --jq '.[0].number // empty'
+            )
+          fi
 
           if [[ -n "${EXISTING_ISSUE_NUMBER}" ]]; then
             gh issue edit "${EXISTING_ISSUE_NUMBER}" \
