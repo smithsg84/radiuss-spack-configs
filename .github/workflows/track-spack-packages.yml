@@ -211,6 +211,8 @@ jobs:
           fi
 
           BODY_FILE="${RUNNER_TEMP}/issue-body.md"
+          ISSUE_TITLE_PREFIX="[spack-packages-tracker:${MATRIX_NAME}]"
+          ISSUE_TITLE="${ISSUE_TITLE_PREFIX} Update spack-packages reference to ${LATEST_COMMIT_SHORT}"
           {
             echo "Automated weekly check detected relevant changes in \`spack/spack-packages\` for **${MATRIX_NAME}**."
             echo
@@ -231,11 +233,29 @@ jobs:
             echo "${DIFF_SECTION}"
           } > "${BODY_FILE}"
 
-          gh issue create \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "[${MATRIX_NAME}] Update spack-packages reference to ${LATEST_COMMIT_SHORT}" \
-            --body-file "${BODY_FILE}" \
-            --label "automation"
+          EXISTING_ISSUE_NUMBER=$(
+            gh issue list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --state open \
+              --label "automation" \
+              --search "\"${ISSUE_TITLE_PREFIX}\" in:title" \
+              --limit 1 \
+              --json number \
+              --jq '.[0].number // empty'
+          )
+
+          if [[ -n "${EXISTING_ISSUE_NUMBER}" ]]; then
+            gh issue edit "${EXISTING_ISSUE_NUMBER}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${ISSUE_TITLE}" \
+              --body-file "${BODY_FILE}"
+          else
+            gh issue create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${ISSUE_TITLE}" \
+              --body-file "${BODY_FILE}" \
+              --label "automation"
+          fi
 
       - name: Log decision
         if: steps.detect.outputs.should_update != 'true'
