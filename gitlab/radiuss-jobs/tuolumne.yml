@@ -10,9 +10,9 @@ rocmcc_6_4_3_hip:
     SPEC: "${PROJECT_TUOLUMNE_VARIANTS} +rocm amdgpu_target=gfx942 %llvm-amdgpu@=6.4.3 ^hip@6.4.3 ${PROJECT_TUOLUMNE_DEPS}"
   extends: .job_on_tuolumne
 
-rocmcc_7_2_0_hip:
+rocmcc_7_2_1_hip:
   variables:
-    SPEC: "${PROJECT_TUOLUMNE_VARIANTS} +rocm amdgpu_target=gfx942 %llvm-amdgpu@=7.2.0 ^hip@7.2.0 ${PROJECT_TUOLUMNE_DEPS}"
+    SPEC: "${PROJECT_TUOLUMNE_VARIANTS} +rocm amdgpu_target=gfx942 %llvm-amdgpu@=7.2.1 ^hip@7.2.1 ${PROJECT_TUOLUMNE_DEPS}"
   extends: .job_on_tuolumne
 
 cce_21_0_0:
