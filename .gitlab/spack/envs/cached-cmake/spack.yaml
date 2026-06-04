@@ -58,13 +58,13 @@ spack:
     when: env.get("LCSCHEDCLUSTER", "") == "matrix"
   - compilers:
     - +rocm amdgpu_target=gfx90a %llvm-amdgpu@=6.4.3 ^hip@6.4.3
-    - +rocm amdgpu_target=gfx90a %llvm-amdgpu@=7.2.0 ^hip@7.2.0
+    - +rocm amdgpu_target=gfx90a %llvm-amdgpu@=7.2.1 ^hip@7.2.1
     - '%cce@=20.0.0'
     - '%cce@=21.0.0'
     when: env.get("LCSCHEDCLUSTER", "") == "tioga"
   - compilers:
     - +rocm amdgpu_target=gfx942 %llvm-amdgpu@=6.4.3 ^hip@6.4.3
-    - +rocm amdgpu_target=gfx942 %llvm-amdgpu@=7.2.0 ^hip@7.2.0
+    - +rocm amdgpu_target=gfx942 %llvm-amdgpu@=7.2.1 ^hip@7.2.1
     - '%cce@=20.0.0'
     - '%cce@=21.0.0'
     when: env.get("LCSCHEDCLUSTER", "") == "tuolumne"
@@ -90,9 +90,9 @@ spack:
     - [$cached-cmake-projects]
     - [$compilers]
     exclude:
-    # in spack package, raja-perf@2025.03 asks for c++14, but rocprim 7.2.0 requires c++17.
-    - 'raja-perf +rocm amdgpu_target=gfx90a %llvm-amdgpu@=7.2.0 ^hip@7.2.0'
-    - 'raja-perf +rocm amdgpu_target=gfx942 %llvm-amdgpu@=7.2.0 ^hip@7.2.0'
+    # in spack package, raja-perf@2025.03 asks for c++14, but rocprim 7.2.1 requires c++17.
+    - 'raja-perf +rocm amdgpu_target=gfx90a %llvm-amdgpu@=7.2.1 ^hip@7.2.1'
+    - 'raja-perf +rocm amdgpu_target=gfx942 %llvm-amdgpu@=7.2.1 ^hip@7.2.1'
     # No +rocm or +cuda variants for sina
     - 'sina +rocm amdgpu_target=gfx90a %llvm-amdgpu@=6.4.3 ^hip@6.4.3'
     - 'sina +cuda %clang-14 ^cuda@11.7.0+allow-unsupported-compilers'
