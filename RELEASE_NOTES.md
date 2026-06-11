@@ -8,6 +8,7 @@
 
   ## CI
   - Clear any reference to lassen and poodle.
+  - Add hubcast config file.
 
   ## Packages
 
